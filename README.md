@@ -16,6 +16,8 @@ py run.py
 
 Then visit `http://127.0.0.1:5000`.
 
+Do not open `index.html` through Live Server or by double-clicking it: registration and login require the Flask server above.
+
 ## Included screens
 
 Login, registration, dashboard, live feed, detection mode, incident alert, incident detail, incidents, history, settings, and logout.

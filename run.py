@@ -38,6 +38,11 @@ def init_db() -> None:
         )
 
 
+# Initialise on import as well as direct execution, so both `py run.py` and
+# `flask --app run run` create the users table before registration is used.
+init_db()
+
+
 @app.post("/api/register")
 def register():
     data = request.get_json(silent=True) or {}
@@ -109,5 +114,4 @@ def static_files(filename: str):
 
 
 if __name__ == "__main__":
-    init_db()
     app.run(debug=True, host="127.0.0.1", port=5000)
