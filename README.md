@@ -27,3 +27,7 @@ Login, registration, dashboard, live feed, detection mode, incident alert, incid
 Registration creates a user in `instance/cctv.db`. Passwords are never stored as plain text; Flask/Werkzeug stores password hashes. Login is only accepted when the submitted username and password match a registered user.
 
 Camera, detection, incident, history, and settings values remain frontend demonstrations until their backend phase is added.
+
+## Live dashboard
+
+The dashboard reads its counts and recent-incidents list from SQLite and refreshes every three seconds. It starts with one online laptop camera and zero incidents. The `POST /api/incidents` endpoint is ready for the future OpenCV/YOLO detector to record `Motion Detected` or `Person Detected` events; the dashboard will reflect them on its next refresh.
