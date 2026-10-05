@@ -21,12 +21,98 @@ app = Flask(__name__, static_folder=None)
 # Set SECRET_KEY in the environment before deployment. This fallback is only for local development.
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-local-development-key")
 
+DEFAULT_SETTINGS = {
+    "camera_name": "Laptop Webcam",
+    "camera_status": "Online",
+    "motion_detection": True,
+    "person_detection": True,
+    "confidence_threshold": 80,
+}
+
 
 def get_db() -> sqlite3.Connection:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATABASE_PATH)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _bool_from_value(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _int_from_value(value, default: int, minimum: int = 0, maximum: int = 100) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number < minimum or number > maximum:
+        return default
+    return number
+
+
+def _normalize_settings(raw: dict | None) -> dict:
+    data = DEFAULT_SETTINGS.copy()
+    if raw:
+        data.update(raw)
+
+    camera_name = str(data.get("camera_name", DEFAULT_SETTINGS["camera_name"])).strip() or DEFAULT_SETTINGS["camera_name"]
+    camera_status = str(data.get("camera_status", DEFAULT_SETTINGS["camera_status"])).strip()
+    if camera_status not in {"Online", "Offline"}:
+        camera_status = DEFAULT_SETTINGS["camera_status"]
+
+    return {
+        "camera_name": camera_name,
+        "camera_status": camera_status,
+        "motion_detection": _bool_from_value(data.get("motion_detection"), DEFAULT_SETTINGS["motion_detection"]),
+        "person_detection": _bool_from_value(data.get("person_detection"), DEFAULT_SETTINGS["person_detection"]),
+        "confidence_threshold": _int_from_value(data.get("confidence_threshold"), DEFAULT_SETTINGS["confidence_threshold"], 1, 100),
+    }
+
+
+def get_settings() -> dict:
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT setting_key, setting_value FROM app_settings"
+        ).fetchall()
+
+    stored = {row["setting_key"]: row["setting_value"] for row in rows}
+    normalized = _normalize_settings(stored)
+    if "camera_name" in stored and stored["camera_name"]:
+        normalized["camera_name"] = str(stored["camera_name"])
+    return normalized
+
+
+def save_settings(data: dict | None) -> dict:
+    current = get_settings()
+    incoming = _normalize_settings({**current, **(data or {})})
+
+    with get_db() as db:
+        for key, value in incoming.items():
+            db.execute(
+                "INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) "
+                "ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value",
+                (key, str(value)),
+            )
+        db.execute(
+            "UPDATE cameras SET camera_name = ?, camera_status = ? WHERE camera_id = 1",
+            (incoming["camera_name"], incoming["camera_status"]),
+        )
+
+    detector.configure(incoming)
+    return incoming
 
 
 def init_db() -> None:
@@ -76,8 +162,21 @@ def init_db() -> None:
             """
         )
         db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
             "INSERT OR IGNORE INTO cameras (camera_id, camera_name, camera_status) VALUES (1, 'Laptop Webcam', 'Online')"
         )
+        for key, value in DEFAULT_SETTINGS.items():
+            db.execute(
+                "INSERT OR IGNORE INTO app_settings (setting_key, setting_value) VALUES (?, ?)",
+                (key, str(value)),
+            )
 
 
 # Initialise on import as well as direct execution, so both `py run.py` and
@@ -112,6 +211,19 @@ def login_required(view):
             return jsonify(message="Please log in first."), 401
         return view(*args, **kwargs)
     return wrapped
+
+
+@app.get("/api/settings")
+@login_required
+def get_settings_route():
+    return jsonify(get_settings())
+
+
+@app.post("/api/settings")
+@login_required
+def save_settings_route():
+    data = request.get_json(silent=True) or {}
+    return jsonify(save_settings(data))
 
 
 @app.post("/api/register")

@@ -27,6 +27,9 @@ class CameraDetector:
         self._previous_gray = None
         self._model = None
         self._last_event: dict[str, float] = {}
+        self._motion_detection_enabled = True
+        self._person_detection_enabled = True
+        self._confidence_threshold = 0.80
         self._status = {
             "camera_online": False,
             "motion_active": False,
@@ -34,6 +37,12 @@ class CameraDetector:
             "last_detection": None,
             "error": None,
         }
+
+    def configure(self, settings: dict) -> None:
+        self._motion_detection_enabled = bool(settings.get("motion_detection", self._motion_detection_enabled))
+        self._person_detection_enabled = bool(settings.get("person_detection", self._person_detection_enabled))
+        threshold = float(settings.get("confidence_threshold", self._confidence_threshold))
+        self._confidence_threshold = max(0.05, min(threshold / 100.0, 0.99))
 
     def start(self) -> None:
         if self._running:
@@ -117,9 +126,9 @@ class CameraDetector:
 
             person_confidence = None
             self._load_model()
-            if self._model is not None:
+            if self._model is not None and self._person_detection_enabled:
                 try:
-                    result = self._model(frame, classes=[0], conf=0.55, verbose=False)[0]
+                    result = self._model(frame, classes=[0], conf=self._confidence_threshold, verbose=False)[0]
                     if len(result.boxes):
                         box = result.boxes[0]
                         person_confidence = float(box.conf[0])
@@ -131,9 +140,9 @@ class CameraDetector:
                         self._status["error"] = f"YOLO detection error: {exc}"
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if motion:
+            if self._motion_detection_enabled and motion:
                 self._notify("Motion Detected", annotated)
-            if person_confidence is not None:
+            if self._person_detection_enabled and person_confidence is not None:
                 self._notify("Person Detected", annotated)
 
             cv2.putText(annotated, f"{now}  LIVE", (14, 32), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 0, 255), 2)
@@ -142,14 +151,14 @@ class CameraDetector:
                 with self._lock:
                     self._latest_jpeg = buffer.tobytes()
                     self._status.update(
-                        motion_active=motion,
-                        person_active=person_confidence is not None,
+                        motion_active=self._motion_detection_enabled and motion,
+                        person_active=self._person_detection_enabled and person_confidence is not None,
                         last_detection={
                             "type": "Person Detected" if person_confidence is not None else "Motion Detected" if motion else None,
                             "confidence": round(person_confidence * 100) if person_confidence is not None else None,
                             "time": now,
                             "camera": "Laptop Webcam",
-                        } if (motion or person_confidence is not None) else None,
+                        } if ((self._motion_detection_enabled and motion) or (self._person_detection_enabled and person_confidence is not None)) else None,
                     )
             time.sleep(.03)
 
