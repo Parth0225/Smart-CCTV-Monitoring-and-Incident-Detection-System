@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from functools import wraps
 
-from flask import Flask, abort, jsonify, request, send_from_directory, session
+import cv2
+from flask import Flask, Response, abort, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from detection import CameraDetector
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "instance" / "cctv.db"
+UPLOAD_DIR = BASE_DIR / "static" / "uploads"
 
 app = Flask(__name__, static_folder=None)
 # Set SECRET_KEY in the environment before deployment. This fallback is only for local development.
@@ -78,6 +83,26 @@ def init_db() -> None:
 # Initialise on import as well as direct execution, so both `py run.py` and
 # `flask --app run run` create the users table before registration is used.
 init_db()
+
+
+def save_incident(incident_type: str, frame) -> int:
+    """Persist a detector event and its annotated frame in SQLite."""
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now()
+    filename = f"incident_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+    output_path = UPLOAD_DIR / filename
+    if not cv2.imwrite(str(output_path), frame):
+        raise RuntimeError("Screenshot could not be written.")
+    with get_db() as db:
+        cursor = db.execute(
+            "INSERT INTO incidents (camera_id, incident_type, detected_at, screenshot_path) VALUES (?, ?, ?, ?)",
+            (1, incident_type, timestamp.isoformat(sep=" ", timespec="seconds"), f"/uploads/{filename}"),
+        )
+        db.execute("INSERT INTO system_logs (activity) VALUES (?)", (incident_type,))
+    return cursor.lastrowid
+
+
+detector = CameraDetector(save_incident)
 
 
 def login_required(view):
@@ -183,6 +208,64 @@ def dashboard_data():
     )
 
 
+@app.get("/api/detection-status")
+@login_required
+def detection_status():
+    detector.start()
+    return jsonify(detector.status())
+
+
+@app.get("/video_feed")
+@login_required
+def video_feed():
+    return Response(detector.frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/api/incidents")
+@login_required
+def incidents_list():
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT i.incident_id, i.incident_type, i.detected_at, i.screenshot_path, i.status, c.camera_name
+            FROM incidents i JOIN cameras c ON c.camera_id = i.camera_id
+            ORDER BY i.detected_at DESC, i.incident_id DESC
+            """
+        ).fetchall()
+    return jsonify(incidents=[dict(row) for row in rows])
+
+
+@app.get("/api/incidents/<int:incident_id>")
+@login_required
+def incident_detail(incident_id: int):
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT i.incident_id, i.incident_type, i.detected_at, i.screenshot_path, i.status, c.camera_name
+            FROM incidents i JOIN cameras c ON c.camera_id = i.camera_id
+            WHERE i.incident_id = ?
+            """,
+            (incident_id,),
+        ).fetchone()
+    if row is None:
+        return jsonify(message="Incident not found."), 404
+    return jsonify(incident=dict(row))
+
+
+@app.get("/api/history")
+@login_required
+def history_list():
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT l.log_id, l.activity, l.date_time, COALESCE(u.username, 'System') AS username
+            FROM system_logs l LEFT JOIN users u ON u.user_id = l.user_id
+            ORDER BY l.date_time DESC, l.log_id DESC LIMIT 100
+            """
+        ).fetchall()
+    return jsonify(logs=[dict(row) for row in rows])
+
+
 @app.post("/api/incidents")
 @login_required
 def create_incident():
@@ -201,6 +284,12 @@ def create_incident():
         )
         db.execute("INSERT INTO system_logs (user_id, activity) VALUES (?, ?)", (session["user_id"], incident_type))
     return jsonify(message="Incident recorded.", incident_id=cursor.lastrowid), 201
+
+
+@app.get("/uploads/<path:filename>")
+@login_required
+def incident_upload(filename: str):
+    return send_from_directory(UPLOAD_DIR, filename)
 
 
 @app.get("/")

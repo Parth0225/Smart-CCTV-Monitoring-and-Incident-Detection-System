@@ -31,3 +31,9 @@ Camera, detection, incident, history, and settings values remain frontend demons
 ## Live dashboard
 
 The dashboard reads its counts and recent-incidents list from SQLite and refreshes every three seconds. It starts with one online laptop camera and zero incidents. The `POST /api/incidents` endpoint is ready for the future OpenCV/YOLO detector to record `Motion Detected` or `Person Detected` events; the dashboard will reflect them on its next refresh.
+
+## Live camera and detection
+
+The Live Feed page starts a shared OpenCV webcam stream from `cv2.VideoCapture(0)`. Motion is detected through consecutive-frame comparison. YOLOv8 detects the `person` class only; its weights (`yolov8n.pt`) download automatically on the first successful run. Each detected event is rate-limited, annotated, saved as a screenshot in `static/uploads/`, and stored in SQLite. The dashboard, incidents list, history, and incident detail page use the same stored live data.
+
+If the camera is unavailable, close other apps using it and grant camera permission to Python when Windows asks.
